@@ -1,0 +1,9 @@
+
+.venv/
+.venv311/
+__pycache__/
+*.pyc
+
+data/
+models/__pycache__/
+outputs/*.npz
