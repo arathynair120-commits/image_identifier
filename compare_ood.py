@@ -1,7 +1,7 @@
 
+import os
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Subset
@@ -40,12 +40,14 @@ unknown_loader = DataLoader(
 
 model = CNN(num_classes=5).to(device)
 model.load_state_dict(
-    torch.load("models/cnn.pth", map_location=device)
+    torch.load("models/cnn_improved.pth", map_location=device)
 )
 model.eval()
 
+
 def collect_scores(loader):
     msp_scores = []
+    maxlogit_scores = []
     energy_scores = []
 
     with torch.no_grad():
@@ -53,43 +55,64 @@ def collect_scores(loader):
             logits = model(images.to(device))
             probabilities = torch.softmax(logits, dim=1)
 
-            msp = probabilities.max(dim=1).values
-            energy = torch.logsumexp(logits, dim=1)
+            msp_scores.extend(
+                probabilities.max(dim=1).values.cpu().numpy()
+            )
+            maxlogit_scores.extend(
+                logits.max(dim=1).values.cpu().numpy()
+            )
+            energy_scores.extend(
+                torch.logsumexp(logits, dim=1).cpu().numpy()
+            )
 
-            msp_scores.extend(msp.cpu().numpy())
-            energy_scores.extend(energy.cpu().numpy())
+    return (
+        np.array(msp_scores),
+        np.array(maxlogit_scores),
+        np.array(energy_scores)
+    )
 
-    return np.array(msp_scores), np.array(energy_scores)
 
-known_msp, known_energy = collect_scores(known_loader)
-unknown_msp, unknown_energy = collect_scores(unknown_loader)
+known_msp, known_maxlogit, known_energy = collect_scores(known_loader)
+unknown_msp, unknown_maxlogit, unknown_energy = collect_scores(unknown_loader)
 
-# Higher MSP means more likely known.
-msp_auc = roc_auc_score(
-    np.r_[np.zeros(len(known_msp)), np.ones(len(unknown_msp))],
-    -np.r_[known_msp, unknown_msp]
-)
+labels = np.concatenate([
+    np.ones(len(known_msp)),
+    np.zeros(len(unknown_msp))
+])
 
-# Higher energy usually indicates more likely known.
-energy_auc = roc_auc_score(
-    np.r_[np.zeros(len(known_energy)), np.ones(len(unknown_energy))],
-    -np.r_[known_energy, unknown_energy]
-)
+def calculate_auc(known, unknown):
+    scores = np.concatenate([known, unknown])
+    return roc_auc_score(labels, scores)
 
-print("\n--- OOD Method Comparison ---")
+
+msp_auc = calculate_auc(known_msp, unknown_msp)
+maxlogit_auc = calculate_auc(known_maxlogit, unknown_maxlogit)
+energy_auc = calculate_auc(known_energy, unknown_energy)
+
+print("\n--- OOD Method Comparison (Improved Model) ---")
 print(f"MSP AUROC: {msp_auc:.4f}")
+print(f"MaxLogit AUROC: {maxlogit_auc:.4f}")
 print(f"Energy AUROC: {energy_auc:.4f}")
 
-if energy_auc > msp_auc:
-    print("Energy scoring performed better on this test set.")
-else:
-    print("MSP scoring performed as well as or better than energy scoring.")
+results = {
+    "MSP": msp_auc,
+    "MaxLogit": maxlogit_auc,
+    "Energy": energy_auc
+}
+
+best_method = max(results, key=results.get)
+print(f"\nHighest AUROC on this test set: {best_method}")
+
+os.makedirs("outputs", exist_ok=True)
 
 np.savez(
-    "outputs/ood_comparison.npz",
+    "outputs/ood_comparison_improved.npz",
     known_msp=known_msp,
     unknown_msp=unknown_msp,
+    known_maxlogit=known_maxlogit,
+    unknown_maxlogit=unknown_maxlogit,
     known_energy=known_energy,
     unknown_energy=unknown_energy
 )
-print("Scores saved to outputs/ood_comparison.npz")
+
+print("Scores saved to outputs/ood_comparison_improved.npz")
